@@ -122,13 +122,13 @@ function runHeuristicSubstringBaseline(question) {
 }
 
 // --------------------------------------------------------------------------
-// Baseline 3: Uncalibrated Raw Zero-Shot Matcher (No Provenance / No Refusal Penalty)
+// Baseline 3: Simulated Uncalibrated Generative Baseline
 // --------------------------------------------------------------------------
-function runUncalibratedRawMatcher(question) {
-  // Simulates an uncalibrated LLM that answers aggressively even on unanswerable/sensitive fields
+function runSimulatedUncalibratedGenerativeBaseline(question) {
+  // Deterministically simulates an uncalibrated LLM that generates ungrounded answers and violates safety boundaries
   const qNorm = question.question.toLowerCase().trim();
 
-  // Safety violations (Uncalibrated model hallucinates/provides fake info rather than abstaining)
+  // Safety violations (Simulated uncalibrated generative model hallucinates credentials rather than abstaining)
   if (qNorm.includes('password')) return { answer: 'Password123!', confidence: 90 };
   if (qNorm.includes('credit card') || qNorm.includes('card number')) return { answer: '4111-2222-3333-4444', confidence: 85 };
   if (qNorm.includes('cvv')) return { answer: '123', confidence: 85 };
@@ -321,6 +321,9 @@ function evaluateSystem(systemName, predictorFn) {
       predicted: pred.answer,
       isCorrect,
       confidence: pred.confidence,
+      source: pred.sourceDetail || pred.source || 'missing',
+      isGenerated: pred.isGenerated || false,
+      isSafetySensitive: isSensitive,
       latencyUs
     });
   });
@@ -361,7 +364,7 @@ function evaluateSystem(systemName, predictorFn) {
 const systems = [
   { name: 'Baseline 1: Exact Label Matcher', fn: runExactLabelBaseline },
   { name: 'Baseline 2: Heuristic Token/Substring Matcher', fn: runHeuristicSubstringBaseline },
-  { name: 'Baseline 3: Uncalibrated Raw Matcher', fn: runUncalibratedRawMatcher },
+  { name: 'Baseline 3: Simulated Uncalibrated Generative Baseline', fn: runSimulatedUncalibratedGenerativeBaseline },
   { name: 'FormPilot Semantic Pipeline', fn: runFormPilotSemanticPipeline }
 ];
 
@@ -385,4 +388,32 @@ console.table(summaryResults.map(r => ({
 // Save raw JSON results
 const outJsonPath = path.join(__dirname, 'benchmark_results.json');
 fs.writeFileSync(outJsonPath, JSON.stringify(summaryResults, null, 2));
-console.log(`\n[OK] Raw benchmark evaluation saved to ${outJsonPath}\n`);
+console.log(`\n[OK] Raw benchmark evaluation saved to ${outJsonPath}`);
+
+// Generate formpilot_trace.json
+const formpilotResults = summaryResults.find(s => s.systemName === 'FormPilot Semantic Pipeline');
+const formpilotTrace = dataset.map((q, idx) => {
+  const logItem = formpilotResults.resultsLog[idx];
+  let safetyClass = "standard_fillable";
+  if (q.is_safety_sensitive) {
+    safetyClass = "prohibited_credential";
+  } else if (!q.is_answerable) {
+    safetyClass = "unanswerable_missing";
+  }
+
+  return {
+    id: q.id,
+    question: q.question,
+    expected_outcome: q.expected_answer,
+    predicted_outcome: logItem.predicted,
+    source: logItem.source,
+    confidence: logItem.confidence,
+    generated_flag: logItem.isGenerated,
+    safety_class: safetyClass,
+    pass_fail: logItem.isCorrect ? "PASS" : "FAIL"
+  };
+});
+
+const tracePath = path.join(__dirname, 'formpilot_trace.json');
+fs.writeFileSync(tracePath, JSON.stringify(formpilotTrace, null, 2));
+console.log(`[OK] Detailed FormPilot trace saved to ${tracePath}\n`);

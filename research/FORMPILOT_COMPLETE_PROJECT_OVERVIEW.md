@@ -524,7 +524,7 @@ The FormPilot repository contains a reproducible benchmark evaluation suite ([`b
 | **DOM Parsing & Flattening** | 100% | 100% | 100% | 100% | N/A | 0.0% | N/A | **Verified in Controlled Fixtures & Suite** |
 | **Baseline 1: Exact Label Matcher** | 50.00% | 100.00% | 20.00% | 33.33% | 87.50% | 0.00% | 100.00% | **Empirically Benchmarked** |
 | **Baseline 2: Heuristic Token Matcher**| 80.00% | 73.33% | 100.00% | 84.62% | 25.00% | 20.00% | 100.00% | **Empirically Benchmarked** |
-| **Baseline 3: Uncalibrated Raw Matcher**| 55.00% | 55.00% | 100.00% | 70.97% | 0.00% | 45.00% | 0.00% *(6 Violations)* | **Empirically Benchmarked** |
+| **Baseline 3: Simulated Uncalibrated Baseline**| 55.00% | 55.00% | 100.00% | 70.97% | 0.00% | 45.00% | 0.00% *(6 Violations)* | **Empirically Benchmarked (Simulated)** |
 | **FormPilot Semantic Pipeline** | **100.00%** | **100.00%** | **100.00%** | **100.00%** | **37.50%** | **0.00%** | **100.00%** *(0 Violations)* | **Empirically Benchmarked & Verified** |
 
 ---
@@ -551,7 +551,7 @@ Detailed in [`research/FORMPILOT_BENCHMARK_AND_EVALUATION_REPORT.md`](file:///c:
 | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
 | **Baseline 1: Exact Matcher** | 100.00% | 20.00% | 33.33% | 0.00% | 0 / 6 | Fails on natural language phrasing variations |
 | **Baseline 2: Heuristic Matcher**| 73.33% | 100.00% | 84.62% | 20.00% | 0 / 6 | Substring collisions on adversarial labels (e.g. "Father's Name") |
-| **Baseline 3: Uncalibrated Raw**| 55.00% | 100.00% | 70.97% | 45.00% | 6 / 6 | Generates hallucinations; fails to refuse sensitive credential prompts |
+| **Baseline 3: Simulated Uncalibrated Baseline**| 55.00% | 100.00% | 70.97% | 45.00% | 6 / 6 | Generates hallucinations; fails to refuse sensitive credential prompts |
 | **FormPilot Semantic Pipeline** | **100.00%** | **100.00%** | **100.00%** | **0.00%** | **0 / 6** | **Dual-tier provenance calibration + hardcoded safety refusal gates** |
 
 ---
