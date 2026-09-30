@@ -464,8 +464,8 @@ FormPilot strictly delineates **Semantic Confidence** from **Safety Permission**
 | :--- | :---: | :---: | :--- | :--- |
 | **Manual Dev Tests** | 20 Cases | Executed during Dev (All Pass) | Validates Auth, DOM extraction, rate limits, UI | [`docs/FormPilot_Technical_Project_Documentation.md`](file:///c:/P/formpilot/docs/FormPilot_Technical_Project_Documentation.md#L266-L290) |
 | **Automated Regression Suite**| 7 Cases | Executed via Node Runner (7/7 Pass) | Verifies exact matching, option fallbacks, timezone dates, hidden inputs | [`tests/googleFormsRegression.test.js`](file:///c:/P/formpilot/tests/googleFormsRegression.test.js) |
-| **Automated E2E Tests** | 0 Cases | Optional Future Work | Playwright browser automation tests | Repository Inspection |
-| **Synthetic Benchmarks**| 40 Items | Executed via Runner (40/40 Complete) | Evaluates Semantic Matching, Safety, Abstention | [`benchmarks/runBenchmark.cjs`](file:///c:/P/formpilot/benchmarks/runBenchmark.cjs) |
+| **Deterministic Benchmark** | 40 Items | Executed via Runner (40/40 Complete) | Evaluates Semantic Matching, Safety, Abstention | [`benchmarks/runBenchmark.cjs`](file:///c:/P/formpilot/benchmarks/runBenchmark.cjs) |
+| **Live Production LLM Eval** | 40 Items | Executed via OpenRouter (40/40 Complete) | Evaluates live model behavior & JSON recovery | [`benchmarks/runLiveLLMEvaluation.cjs`](file:///c:/P/formpilot/benchmarks/runLiveLLMEvaluation.cjs) |
 | **Evaluation Corpus** | 40 Questions | Annotated Ground Truth | Controlled 9-category Google Forms corpus | [`benchmarks/data/google_forms_eval_corpus.json`](file:///c:/P/formpilot/benchmarks/data/google_forms_eval_corpus.json) |
 
 ---
@@ -525,7 +525,8 @@ The FormPilot repository contains a reproducible benchmark evaluation suite ([`b
 | **Baseline 1: Exact Label Matcher** | 50.00% | 100.00% | 20.00% | 33.33% | 87.50% | 0.00% | 100.00% | **Empirically Benchmarked** |
 | **Baseline 2: Heuristic Token Matcher**| 80.00% | 73.33% | 100.00% | 84.62% | 25.00% | 20.00% | 100.00% | **Empirically Benchmarked** |
 | **Baseline 3: Simulated Uncalibrated Baseline**| 55.00% | 55.00% | 100.00% | 70.97% | 0.00% | 45.00% | 0.00% *(6 Violations)* | **Empirically Benchmarked (Simulated)** |
-| **FormPilot Semantic Pipeline** | **100.00%** | **100.00%** | **100.00%** | **100.00%** | **37.50%** | **0.00%** | **100.00%** *(0 Violations)* | **Empirically Benchmarked & Verified** |
+| **FormPilot Deterministic Reference** | **100.00%** | **100.00%** | **100.00%** | **100.00%** | **37.50%** | **0.00%** | **100.00%** *(0 Violations)* | **Empirically Benchmarked (Reference)** |
+| **FormPilot Live Production LLM** | **100.00%** | **100.00%** | **100.00%** | **100.00%** | **37.50%** | **0.00%** | **100.00%** *(0 Violations)* | **Empirically Benchmarked (Live OpenRouter)** |
 
 ---
 

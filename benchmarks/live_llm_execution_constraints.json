@@ -1,0 +1,13 @@
+{
+  "status": "API_CONSTRAINTS_ENCOUNTERED",
+  "modelName": "nvidia/nemotron-3.5-lightning:free",
+  "provider": "OpenRouter",
+  "errors": [
+    {
+      "runIndex": 1,
+      "error": "This operation was aborted",
+      "timestamp": "2026-09-30T06:01:52.860Z"
+    }
+  ],
+  "documentation": "Live network calls to OpenRouter require unsandboxed execution or active API credits."
+}
