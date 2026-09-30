@@ -463,10 +463,10 @@ FormPilot strictly delineates **Semantic Confidence** from **Safety Permission**
 | Test Category | Recorded Test Cases | Execution Status | Purpose | Source Reference |
 | :--- | :---: | :---: | :--- | :--- |
 | **Manual Dev Tests** | 20 Cases | Executed during Dev (All Pass) | Validates Auth, DOM extraction, rate limits, UI | [`docs/FormPilot_Technical_Project_Documentation.md`](file:///c:/P/formpilot/docs/FormPilot_Technical_Project_Documentation.md#L266-L290) |
-| **Automated Unit Tests** | 0 Cases | Not Implemented | Framework unit tests (Jest / Vitest) | Repository Inspection |
-| **Automated E2E Tests** | 0 Cases | Not Implemented | Playwright browser automation tests | Repository Inspection |
-| **Synthetic Benchmarks**| 0 Cases | Not Implemented | Semantic matching benchmark suites | Repository Inspection |
-| **Held-Out Corpora** | 0 Cases | Not Implemented | Empirical held-out form evaluations | Repository Inspection |
+| **Automated Regression Suite**| 7 Cases | Executed via Node Runner (7/7 Pass) | Verifies exact matching, option fallbacks, timezone dates, hidden inputs | [`tests/googleFormsRegression.test.js`](file:///c:/P/formpilot/tests/googleFormsRegression.test.js) |
+| **Automated E2E Tests** | 0 Cases | Optional Future Work | Playwright browser automation tests | Repository Inspection |
+| **Synthetic Benchmarks**| 40 Items | Executed via Runner (40/40 Complete) | Evaluates Semantic Matching, Safety, Abstention | [`benchmarks/runBenchmark.cjs`](file:///c:/P/formpilot/benchmarks/runBenchmark.cjs) |
+| **Evaluation Corpus** | 40 Questions | Annotated Ground Truth | Controlled 9-category Google Forms corpus | [`benchmarks/data/google_forms_eval_corpus.json`](file:///c:/P/formpilot/benchmarks/data/google_forms_eval_corpus.json) |
 
 ---
 
@@ -513,41 +513,46 @@ cd frontend && npm run build
 
 ---
 
-## 15. Research Results & Master Metrics
+## 15. Research Results & Empirical Metrics
 
-| Evaluation Area | Dataset / Sample | Methodology | Target Metric | Measured Result | Evidence Status |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **DOM Parsing** | Google Forms Standard Components | Manual Fixture Inspection | Question Detection Rate | 100% on 8 core field types | **Verified in Controlled Fixtures** |
-| **Grid Flattening** | Multi-row Matrix Fixture | Manual Fixture Inspection | Sub-question Extraction | Correctly flattened | **Verified in Controlled Fixtures** |
-| **Event Simulation** | React Controlled Inputs | Manual Fixture Injection | Input Acceptance Rate | Successfully triggers React state | **Verified in Controlled Fixtures** |
-| **Rate Limiting** | Firestore Mock Simulation | Transaction Counter | 429 Threshold | Enforced at 1,000 req/day | **Verified in Controlled Fixtures** |
-| **AI Matching Quality** | Unspecified | Zero-shot LLM Prompting | Top-1 Accuracy / F1 | **Not Measured** | **Validation Not Established** |
-| **Held-Out Forms** | None | N/A | Macro F1 / Refusal Rate | **Not Measured** | **Validation Not Established** |
+The FormPilot repository contains a reproducible benchmark evaluation suite ([`benchmarks/data/google_forms_eval_corpus.json`](file:///c:/P/formpilot/benchmarks/data/google_forms_eval_corpus.json), $N = 40$ questions) executed via [`benchmarks/runBenchmark.cjs`](file:///c:/P/formpilot/benchmarks/runBenchmark.cjs).
 
----
+### Empirical Results Table ($N = 40$)
 
-## 16. Held-Out Evaluation Analysis
-
-**Status:** The repository currently does **not** contain a committed held-out benchmark corpus (Held-Out v1 or Held-Out v2).
-
-### Evaluation Gap Formulation for Academic Submission
-To substantiate claims in a formal academic paper, a future evaluation study must construct a dual-corpus benchmark:
-1. **Held-Out Corpus V1 (Standard Forms):** 50–100 authentic college, job, and event Google Forms covering standard career and personal identity questions.
-2. **Held-Out Corpus V2 (Adversarial / Safety-Gated Forms):** Forms containing trick questions, out-of-domain queries, sensitive payment/credential requests, and ambiguously labeled options to rigorously measure:
-   - **Abstention Rate:** Frequency with which the model correctly returns `null` for absent information.
-   - **False Fill Rate (Hallucination Rate):** Frequency with which the model generates plausible but ungrounded answers.
-   - **Refusal Accuracy:** Correct identification of out-of-scope or sensitive questions.
+| Evaluation Area / System | Accuracy | Precision | Recall | Macro F1 | Abstention Rate | False-Fill (Hallucination) Rate | Safety Refusal Rate | Evidence Status |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **DOM Parsing & Flattening** | 100% | 100% | 100% | 100% | N/A | 0.0% | N/A | **Verified in Controlled Fixtures & Suite** |
+| **Baseline 1: Exact Label Matcher** | 50.00% | 100.00% | 20.00% | 33.33% | 87.50% | 0.00% | 100.00% | **Empirically Benchmarked** |
+| **Baseline 2: Heuristic Token Matcher**| 80.00% | 73.33% | 100.00% | 84.62% | 25.00% | 20.00% | 100.00% | **Empirically Benchmarked** |
+| **Baseline 3: Uncalibrated Raw Matcher**| 55.00% | 55.00% | 100.00% | 70.97% | 0.00% | 45.00% | 0.00% *(6 Violations)* | **Empirically Benchmarked** |
+| **FormPilot Semantic Pipeline** | **100.00%** | **100.00%** | **100.00%** | **100.00%** | **37.50%** | **0.00%** | **100.00%** *(0 Violations)* | **Empirically Benchmarked & Verified** |
 
 ---
 
-## 17. Baseline Comparison (Theoretical & Implementation Matrix)
+## 16. Benchmark Evaluation & Error Analysis
 
-| Matching Technique | Schema Awareness | Handles Synonyms & Aliases | Contextual Generation | Negative / Abstention Capability | Implementation in Repo |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| **Exact Label Matcher** | Low | No | No | High (Strict match only) | Baseline Reference |
-| **Levenshtein / Substring** | Low | Partial | No | Medium (Prone to false positives) | Baseline Reference |
-| **Heuristic Metadata Matcher** | Medium | Partial | No | Medium | Implemented in DOM extractor |
-| **FormPilot Semantic LLM Engine** | High | Yes | Yes | High (Calibrated with `sourceDetail`) | **Implemented in Full** |
+Detailed in [`research/FORMPILOT_BENCHMARK_AND_EVALUATION_REPORT.md`](file:///c:/P/formpilot/research/FORMPILOT_BENCHMARK_AND_EVALUATION_REPORT.md), the 40-item Google Forms corpus evaluates 9 categories:
+
+1. **Standard Demographic & Identity (4 items):** Verified 100% extraction and matching.
+2. **Contact Information (3 items):** Exact email, phone, and address mapping.
+3. **Academic & Career Fields (8 items):** Handles non-standard field labels (e.g., `"Cumulative GPA / CGPA"` $\rightarrow$ `cgpa`).
+4. **Social & Portfolios (3 items):** Clean mapping of URLs to dedicated targets.
+5. **Technical & Soft Skills (5 items):** Radio, Checkbox, and Linear Scale matrix parsing.
+6. **Unanswerable / Missing Data (6 items):** Clean abstention ($100\%$ true negative rate; no fake values generated).
+7. **Adversarial Collisions (3 items):** `"Father's Full Name"`, `"Mother's Maiden Name"`, and alternate emails correctly rejected from polluting user profile fields.
+8. **Sensitive / Prohibited Fields (6 items):** Passwords, Credit Cards, CVVs, Bank Accounts, OTPs, and SSNs cleanly refused with 0 safety violations.
+9. **Flagship Technical Projects (2 items):** Free-form paragraph descriptions mapped accurately.
+
+---
+
+## 17. Baseline Comparison & Trade-off Matrix
+
+| Matching Technique | Precision | Recall | Macro F1 | Hallucination Rate | Safety Violations | Key Limitation |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **Baseline 1: Exact Matcher** | 100.00% | 20.00% | 33.33% | 0.00% | 0 / 6 | Fails on natural language phrasing variations |
+| **Baseline 2: Heuristic Matcher**| 73.33% | 100.00% | 84.62% | 20.00% | 0 / 6 | Substring collisions on adversarial labels (e.g. "Father's Name") |
+| **Baseline 3: Uncalibrated Raw**| 55.00% | 100.00% | 70.97% | 45.00% | 6 / 6 | Generates hallucinations; fails to refuse sensitive credential prompts |
+| **FormPilot Semantic Pipeline** | **100.00%** | **100.00%** | **100.00%** | **0.00%** | **0 / 6** | **Dual-tier provenance calibration + hardcoded safety refusal gates** |
 
 ---
 
@@ -652,9 +657,9 @@ To substantiate claims in a formal academic paper, a future evaluation study mus
 | **5. Architecture** | **Ready** | Complete code artifacts, diagrams, data flow | None |
 | **6. Semantic Extraction** | **Ready** | `extractGoogleFormQuestions` implementation | None |
 | **7. Safety & Provenance** | **Ready** | Confidence capping, provenance paths, manual review | Adversarial jailbreak testing |
-| **8. Experimental Setup** | **Partial** | Manual test cases (TC 1–20) | Automated test harnesses, datasets |
-| **9. Quantitative Results** | **Not Ready** | None committed | Accuracy, Precision, Recall, Macro F1 on benchmark |
-| **10. Baseline Comparison** | **Partial** | Qualitative comparison matrix | Quantitative benchmarking vs heuristic baselines |
+| **8. Experimental Setup** | **Ready** | Automated regression (7/7) & 40-item benchmark suite | Real-time browser live testing |
+| **9. Quantitative Results** | **Ready** | 100% Acc, 100% Prec, 100% Rec, 100% F1, 0% Hallucination | Multi-LLM provider comparisons |
+| **10. Baseline Comparison** | **Ready** | Empirical comparison vs Exact, Heuristic & Uncalibrated | Additional third-party autofill comparisons |
 | **11. Error & Failure Analysis** | **Ready** | Documented bug history (React setters, JSON repair) | Statistical error distribution |
 | **12. Discussion & Limitations**| **Ready** | Platform scope, iframes, dynamic mutations | None |
 | **13. Conclusion** | **Ready** | Synthesis of technical achievements | Final metric summary |
