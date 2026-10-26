@@ -60,7 +60,7 @@ export function extractJsonFromResponse(rawText: string): any {
   }
 
   // 1. Remove <think>...</think> tags if present from reasoning models
-  let text = rawText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  const text = rawText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
   // 2. Try extracting from markdown code blocks (e.g. ```json ... ```)
   const codeBlockMatches = Array.from(text.matchAll(/```(?:json)?\s*([\s\S]*?)(?:```|$)/gi));
@@ -134,6 +134,8 @@ export function extractJsonFromResponse(rawText: string): any {
   }
 }
 
+export const DEFAULT_OPENROUTER_TIMEOUT_MS = 30000;
+
 export async function callOpenRouter({
   messages,
   model = process.env.OPENROUTER_MODEL || FREE_OPENROUTER_MODEL,
@@ -141,8 +143,14 @@ export async function callOpenRouter({
   temperature = 0.1,
   maxTokens = 4096,
 }: OpenRouterCallOptions): Promise<string> {
-  const apiKey = process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
+    if (process.env.GEMINI_API_KEY) {
+      throw new OpenRouterError(
+        'OPENROUTER_API_KEY is missing. (Note: GEMINI_API_KEY cannot be used to authenticate with OpenRouter endpoints).',
+        500
+      );
+    }
     throw new OpenRouterError('OpenRouter API key is not configured (OPENROUTER_API_KEY). Please set it in your environment variables.', 500);
   }
 
@@ -161,19 +169,32 @@ export async function callOpenRouter({
     payload.response_format = responseFormat;
   }
 
+  const timeoutMs = parseInt(process.env.OPENROUTER_TIMEOUT_MS || '', 10) || DEFAULT_OPENROUTER_TIMEOUT_MS;
   let response: Response;
   try {
-    response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
-        'X-Title': 'FormPilot',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
+          'X-Title': 'FormPilot',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
   } catch (networkErr: any) {
+    if (networkErr?.name === 'AbortError' || networkErr?.code === 'ABORT_ERR') {
+      console.error(`[OpenRouter Client] Request timed out after ${timeoutMs}ms`);
+      throw new OpenRouterError(`Gateway Timeout: Request to AI provider timed out after ${Math.round(timeoutMs / 1000)}s. Please try again.`, 504, networkErr);
+    }
     console.error('[OpenRouter Client] Network failure calling OpenRouter:', networkErr);
     throw new OpenRouterError(`Connection error: Failed to reach OpenRouter API (${networkErr?.message || 'Network failure'}). Please check your internet connection.`, 503, networkErr);
   }

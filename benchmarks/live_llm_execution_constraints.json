@@ -5,8 +5,8 @@
   "errors": [
     {
       "runIndex": 1,
-      "error": "This operation was aborted",
-      "timestamp": "2026-09-30T06:01:52.860Z"
+      "error": "Unexpected token 'H', \"HereHere's\"... is not valid JSON",
+      "timestamp": "2026-10-06T20:12:34.426Z"
     }
   ],
   "documentation": "Live network calls to OpenRouter require unsandboxed execution or active API credits."

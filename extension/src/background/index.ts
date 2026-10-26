@@ -53,28 +53,45 @@ async function requestTokenRefresh(): Promise<string | null> {
 // ─── Message Router ───────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+  if (!request || typeof request !== 'object' || typeof request.type !== 'string') {
+    sendResponse({ error: 'Malformed message request' });
+    return false;
+  }
+
   if (request.type === 'ANALYZE_FORM') {
+    if (!Array.isArray(request.payload)) {
+      sendResponse({ error: 'Invalid payload: questions array required' });
+      return false;
+    }
     handleAnalyzeForm(request.payload, request.tabId)
       .then(response => sendResponse(response))
       .catch(err => {
-        sendResponse({ error: err.message });
+        sendResponse({ error: err.message || 'Failed to analyze form' });
       });
     return true; // async
   }
   
   if (request.type === 'SEND_CORRECTION') {
+    if (!request.payload || typeof request.payload !== 'object') {
+      sendResponse({ error: 'Invalid payload: correction object required' });
+      return false;
+    }
     handleSendCorrection(request.payload)
       .then(response => sendResponse(response))
       .catch(err => {
-        sendResponse({ error: err.message });
+        sendResponse({ error: err.message || 'Failed to send correction' });
       });
     return true;
   }
 
   if (request.type === 'CACHE_PROFILE') {
+    if (!request.payload || typeof request.payload !== 'object') {
+      sendResponse({ error: 'Invalid payload: profile object required' });
+      return false;
+    }
     chrome.storage.local.set({ 
       userProfile: request.payload.profile,
-      isProfileComplete: request.payload.isComplete
+      isProfileComplete: Boolean(request.payload.isComplete)
     }, () => {
       sendResponse({ status: 'Profile cached' });
     });
@@ -82,6 +99,10 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   }
   
   if (request.type === 'CACHE_AUTH') {
+    if (!request.payload || typeof request.payload !== 'object') {
+      sendResponse({ error: 'Invalid payload: auth object required' });
+      return false;
+    }
     if (request.payload.isAuthenticated === false) {
       // Sign-out: clear all auth and profile data from local storage
       chrome.storage.local.remove(
@@ -90,7 +111,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       );
     } else {
       chrome.storage.local.set({
-        isAuthenticated: request.payload.isAuthenticated,
+        isAuthenticated: Boolean(request.payload.isAuthenticated),
         userUid: request.payload.uid,
         idToken: request.payload.token,
       }, () => {
@@ -99,6 +120,9 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     }
     return true;
   }
+
+  sendResponse({ error: `Unsupported message type: ${request.type}` });
+  return false;
 });
 
 // Listener for external website pings (from official website via externally_connectable)

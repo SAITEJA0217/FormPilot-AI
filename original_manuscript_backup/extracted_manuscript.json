@@ -1,0 +1,528 @@
+{
+  "paragraphs": [
+    "FormPilot: Provenance-Aware, Review-Gated LLM Assistance for Semantic Form Filling in Google Forms",
+    "Kadiyala Preethi, Kalangi Samhitha, Saiteja Reddy Karka",
+    "B.Tech. Artificial Intelligence and Machine Learning, Malla Reddy University, Hyderabad, India",
+    "kadeyelapreethi2006@gmail.com, samhikalangi@gmail.com, karkasaiteja4@gmail.com",
+    "[NEEDS VERIFICATION: corresponding author; institutional e-mail addresses if required by the venue template]",
+    "Abstract—Online forms repeatedly request information that users already keep in structured form, but they phrase it in ways that literal autofill cannot match. We present FormPilot, a Manifest V3 browser extension and web service that assists users in filling Google Forms. FormPilot extracts Google Forms controls, including two-dimensional grid questions, into a unified FormQuestion representation. It then performs LLM-based in-context semantic mapping: the user profile and the extracted questions are serialized as JSON into a single prompt, and for each question the model returns an answer, a confidence score from 0 to 100, and a provenance path (sourceDetail) into the profile. A deterministic server-side rule caps the confidence of generated or ungrounded answers at 70 and assigns zero confidence to missing answers. The profile schema contains no fields for credentials, payment data, or government identifiers. Every proposed answer appears in a review panel, where the user can inspect its provenance, edit it, or skip it before any value is written to the page. The codebase contains no form-submission logic. We evaluated FormPilot on a controlled 40-question development benchmark built around a single test profile. The benchmark has 25 answerable questions and 15 questions that require abstention: 6 missing-information, 6 sensitive-field, and 3 substring-collision cases. In one recorded live evaluation with NVIDIA Nemotron 3.5 Lightning, FormPilot achieved 100% accuracy on this benchmark (95% confidence interval 91.2–100%), with no false fills and all 6 sensitive fields refused. A heuristic token matcher reached 80.0%. The benchmark was constructed during development and only one live run was recorded, so these results do not establish generalization to unseen forms.",
+    "Index Terms—Google Forms, semantic form filling, large language models, browser extensions, human-in-the-loop, provenance, confidence policy, abstention",
+    "I. Introduction",
+    "Application, registration, and survey forms ask for the same personal, academic, and professional details again and again. For each question the user must work out which attribute is being requested and then retrieve it from their own records. Browser autofill helps only in part. It relies on autocomplete tokens that the page author attaches to a control [1], or on predicting a field’s category from its HTML features [2]. A questionnaire question, however, is identified mainly by its wording, and the same attribute can be requested in many ways. A stored academic specialization may be asked for as “major,” “branch of study,” or “area of specialization.” Literal matching between question text and profile field names fails in such cases.",
+    "Large language models (LLMs) can resolve such paraphrases, but using one as an unrestricted autofill engine creates new risks. LLMs can produce fluent but unsupported content [3], which in a form becomes a plausible but false value. An unrestricted assistant may also fill questions that should stay empty because the user’s records do not contain the answer. Some fields, such as passwords, card numbers, and government identifiers, should not be filled automatically at all. Browser autofill has already been shown to expose personal data to fields the user did not intend to fill [4]. An LLM-based assistant therefore needs more than semantic accuracy. It must show where each value came from, separate grounded answers from generated ones, decline when information is missing or sensitive, and leave the final decision to the user.",
+    "FormPilot is designed around these requirements for a single platform, Google Forms. This paper makes three contributions:",
+    "A DOM extraction layer that maps eight Google Forms control types, plus grid questions flattened row by row, onto one FormQuestion schema (Section IV-C).",
+    "A review-gated pipeline that separates three things. LLM-based in-context semantic mapping proposes the answers. Deterministic post-processing tags provenance, caps confidence, and handles missing answers. Execution then requires an explicit user action and never submits the form (Sections IV-D to IV-I).",
+    "An evaluation on a controlled 40-question development benchmark. It compares two lexical baselines, a scripted generative baseline, a deterministic reference implementation, and one recorded live run of the LLM pipeline, and it states the scoring rules and the limits of the evidence (Sections V and VI).",
+    "Section II reviews related work and Section III states the research questions. Section IV describes the system and Section V the experimental setup. Sections VI and VII report and discuss the results, Section VIII lists the limitations, and Section IX concludes.",
+    "II. Related Work",
+    "A. Automated Form Filling",
+    "Toda et al. proposed a probabilistic method that assigns values from a data source to the fields of form-based Web interfaces [5]. Winckler et al. built tool support that helps users fill Web forms with personal information they manage themselves [6]; this is the earlier work closest to FormPilot’s profile-to-form setting. Kantorski et al. surveyed automatic filling of hidden-Web forms, where the goal is to submit search forms so that a crawler can reach the content behind them [7]. Belgacem et al. used machine learning to fill categorical fields in data-entry forms [8], and Bose predicted field labels for browser autofill from features of the page’s HTML [2]. These approaches learn or define a mapping from fields to categories or values. FormPilot instead asks an LLM to map each natural-language question to a path in the user’s profile. It also treats abstention and execution permission as decisions separate from semantic matching.",
+    "B. LLMs, Web Understanding, and Web Agents",
+    "Gur et al. evaluated LLMs on HTML understanding tasks, including semantic classification of page elements and Web navigation [9]. WebRobot automates browser tasks through interactive programming-by-demonstration [10]. Mind2Web provides a dataset for generalist agents acting on real websites [11], and WebArena provides a self-hostable environment for long-horizon Web tasks [12]. Two recent benchmarks address form filling directly. FormFactory provides an interactive environment for benchmarking multimodal agents on form-filling tasks [13]. FormGym evaluates agents on document-style form completion and reports that vision-language agents struggle mainly with locating fields [14]. Unlike these agent settings, FormPilot reads the Google Forms DOM rather than locating fields visually, and it proposes answers instead of completing forms autonomously. FormPilot has not been evaluated on these benchmarks.",
+    "C. Human Oversight, Attribution, and LLM Reliability",
+    "Horvitz’s principles for mixed-initiative interfaces argue that an automated service should consider its uncertainty about the user’s goals before acting [15]. Amershi et al. proposed guidelines for human–AI interaction, including making clear why the system did what it did and supporting efficient correction [16]. Rashkin et al. formalized the attribution of generated text to identified sources [17]; FormPilot’s profile path is a narrow, structured instance of attribution. Xiong et al. found that LLMs tend to be overconfident when they verbalize confidence [18], which is why FormPilot does not treat model-reported confidence as a probability. Greshake et al. showed that content processed by an LLM-integrated application can carry injected instructions [19]. Form question text is content of this kind, and the resulting risk is discussed in Section VIII.",
+    "III. Research Questions",
+    "All four research questions are answered on the controlled development benchmark described in Section V-A:",
+    "RQ1: Can the supported Google Forms controls, including grid questions, be represented in one intermediate representation suitable for LLM-based semantic mapping?",
+    "RQ2: How does LLM-based in-context semantic mapping compare with exact-label and heuristic token matching?",
+    "RQ3: How are provenance paths and the confidence policy applied to the answers produced in the live run?",
+    "RQ4: Do null handling, profile-schema isolation, and sensitive-field refusal prevent false fills on missing-information, sensitive, and collision questions?",
+    "Whether provenance and confidence information help people review answers more accurately or more quickly would require a user study, which has not been conducted (Section VIII).",
+    "IV. System Design",
+    "A. Problem Formulation",
+    "Let the user profile be P and let the questions extracted from a form be Q = {q₁, …, qₙ}. For each question qᵢ FormPilot produces an answer aᵢ (a string or null), a provenance path sᵢ, a source label ℓᵢ ∈ {profile, generated, missing}, and a confidence value cᵢ ∈ [0, 100]. The decision to write aᵢ to the page is not taken by the model. It is made by the user in the review panel, so a high cᵢ never authorizes a write on its own.",
+    "B. Architecture",
+    "FormPilot consists of a browser extension and a web application (Fig. 1). The extension is a Chromium Manifest V3 extension [20] built with React, TypeScript, Vite, and the CRXJS Vite plugin. Its content script runs on Google Forms pages. It extracts questions, renders the Review Panel, and writes approved values. A background service worker handles communication with the server. The web application is built with Next.js and provides the profile dashboard and App Router API routes: /api/ai/generate produces answers and /api/ai/corrections records user corrections. Every API request must carry a Firebase Authentication ID token, which the server verifies with the Firebase Admin SDK. Generation requests are rate-limited to 1,000 per user per day through Firestore transactions. Table I lists the versions used.",
+    "",
+    "Fig. 1. FormPilot architecture. Gray boxes are deterministic components, the heavy-bordered box is the LLM step, and dashed boxes involve the user. Values reach the page only after the user triggers the fill, and no component submits the form.",
+    "Table I. Implementation Stack",
+    "Versions are taken from the project’s package manifests; a caret (^) or tilde (~) denotes the declared semver range. [NEEDS VERIFICATION: Chrome version used for the manual tests; the project documentation targets Chrome 110 or later, but this was not established by testing.]",
+    "C. DOM Extraction and the FormQuestion Representation",
+    "The content script locates question containers with div[role=\"listitem\"] and reads each title from div[role=\"heading\"]. A question is marked as required when its title contains an asterisk, which is then stripped from the text. The control type is determined from the container’s contents, as shown in Table II. Options are read from the attributes and text of the option elements. Hidden inputs are excluded so that internal page tokens are not captured. Controls that match none of the rules, such as file uploads, are typed unsupported and discarded.",
+    "Grid questions (div[role=\"grid\"]) are flattened during extraction. For every data row, the extractor creates a separate FormQuestion. Its text is “<grid title>: <row header>,” its options are the column headers, and its type is checkbox or radio according to whether the grid contains checkboxes. Each question receives an identifier derived from its position (for example q_3, or q_3_r1 for the first grid row). The resulting FormQuestion objects have the fields id, question, type, required, and an optional options list. They are the only form information sent to the server.",
+    "Table II. Google Forms Controls and Their FormQuestion Types",
+    "",
+    "D. User Profile",
+    "The user maintains a structured profile in the dashboard. Its sections are basicProfile, education[], skills, projects[], experience[], and socialLinks. By design, the schema has no fields for passwords, payment-card data, bank details, one-time codes, or government identification numbers. This exclusion is the first layer of FormPilot’s sensitive-information handling (Section IV-G).",
+    "E. LLM-Based In-Context Semantic Mapping",
+    "Semantic mapping is performed by an LLM on the server. FormPilot uses no embeddings, vector similarity, or retrieval step. The request consists of the production system prompt, reproduced in Appendix A, followed by a user message. That message contains the user’s recent corrections (when available), the complete user profile serialized as JSON, and the array of FormQuestion objects serialized as JSON. The system prompt instructs the model to:",
+    "use profile information whenever available and never invent personal information;",
+    "return null when information is unavailable;",
+    "report a confidence score from 0 to 100;",
+    "return dates as YYYY-MM-DD, times as HH:MM, and exact option strings for choice questions;",
+    "give the exact JSON path of the profile value it used (sourceDetail), and set isGenerated when the answer was written or inferred rather than copied.",
+    "The model returns a JSON object of the form {\"answers\": [{question, answer, confidence, sourceDetail, isGenerated}]}. A JSON extraction function (extractJsonFromResponse) recovers this object from the raw model output before post-processing.",
+    "User corrections are stored in Firestore whenever the user edits an answer. An LLM call classifies each one as fact-level or phrasing-level. Up to 15 of the most recent corrections are included in later prompts as examples. Correction history was empty in all benchmark runs (Section V-C).",
+    "F. Provenance and Confidence Policy",
+    "After extraction, a deterministic rule on the server assigns each answer a source label and a final confidence. Let ĉᵢ be the confidence reported by the model:",
+    "if aᵢ is null or empty:  ℓᵢ = missing,  cᵢ = 0",
+    "else if isGeneratedᵢ is true or sᵢ is empty:  ℓᵢ = generated,  cᵢ = min(ĉᵢ, 70)",
+    "otherwise:  ℓᵢ = profile,  cᵢ = ĉᵢ",
+    "The cap of 70 is an engineering choice made during development. It keeps generated or ungrounded answers below the confidence of answers that carry a profile path, which signals to the reviewer that these answers need closer inspection. No theoretical or empirical justification for the specific value has been documented, and the policy is not a statistical calibration. The server checks only that sourceDetail is present and that isGenerated is false. It does not verify that the path exists in the profile or that the answer equals the value stored there. The provenance path is therefore metadata reported by the model and disclosed to the reviewer, not a verified link, and a model that reports a plausible path with a wrong value would still receive its own reported confidence. This gap is listed among the limitations in Section VIII.",
+    "G. Sensitive-Information Handling",
+    "FormPilot is designed not to fill fields requesting passwords or account PINs, payment-card numbers, card security codes, bank account or routing numbers, one-time codes, or social security and national identification numbers. Three mechanisms contribute to this:",
+    "Profile-schema isolation. None of these data types exists in the profile schema (Section IV-D), so the model receives no stored value that it could copy into such a field.",
+    "Prompt instructions. The system prompt tells the model never to invent personal information and to return null when information is unavailable. It does not list the sensitive categories explicitly (Appendix A).",
+    "Deterministic refusal filter. The deterministic reference implementation used in the evaluation applies regular-expression rules (e.g., /password/i, /credit\\s*card/i, /cvv/i, /bank\\s*account/i, /routing/i, /otp/i, /\\bssn\\b/i, /social\\s*security/i) and returns null on a match. This filter is not present in the production /api/ai/generate route or in the live evaluation harness.",
+    "Sensitive-field handling in production, and in the live run, therefore rests on schema isolation and the general prompt instructions alone. Whatever the cause, a null answer is never written to the page: the fill routine skips any question without an answer. The user can still type a value manually.",
+    "H. Review Gate",
+    "The Review Panel is injected into the Google Forms page and lists one card per question. Each card shows the proposed answer and a confidence badge, colored green at 80 or above, yellow at 50 or above, and red below 50. An expandable “Why?” control shows the provenance. For a profile answer it displays the source path; for a generated answer it displays the referenced field together with a note that the value was inferred and should be checked. Questions without an answer are marked “Missing Data.” The user can edit any answer, which also records a correction, or skip it, which sets it to null. No value is written until the user clicks “Autofill Form.” That action writes all answers remaining after review; it does not submit the form.",
+    "I. Controlled DOM Interaction",
+    "To fill the form, the content script matches each answer to its question by exact text before falling back to substring matching. Choice options are resolved in two passes: an exact match first, then a substring match for option strings of at least three characters. Text values are set through the element prototype’s native value setter, after which input, change, and blur events are dispatched so that the page registers the change. Strings already in YYYY-MM-DD form are passed through unchanged, which avoids time-zone shifts caused by date parsing.",
+    "A search of the full repository found no calls to form.submit or requestSubmit, no .submit() calls, and no automated clicks on submit buttons. Submission always requires the user to press the form’s own Submit button.",
+    "V. Experimental Setup",
+    "A. Controlled Development Benchmark",
+    "The evaluation uses a controlled 40-question development benchmark of Google Forms-style questions. All questions are answered against one test profile of a computer-science graduate. [NEEDS VERIFICATION: the profile's contact details are placeholders, but its full name, and possibly its date of birth, gender, and project title, are derived from an author. Replace these with fictional values, update the expected answers, rerun the benchmark and the live evaluation, and only then describe the profile as synthetic.] One of the authors annotated the expected answers based on that profile. Table III gives the composition: 25 questions are answerable from the profile, and 15 require abstention. The 15 comprise 6 missing-information questions (the profile lacks the answer), 6 sensitive-field questions, and 3 collision questions. The collision questions resemble profile fields lexically but ask for different information: “Father’s Full Name,” “Mother’s Maiden Name,” and “Secondary Alternate Email (Personal).” Benchmark items are passed to the systems as structured question records from the corpus file rather than extracted from rendered Google Forms pages, so the benchmark does not exercise DOM extraction. [NEEDS VERIFICATION: confirm.]",
+    "Table III. Composition of the Controlled 40-Question Development Benchmark",
+    "",
+    "This benchmark is not a held-out test set. It was curated during development to exercise specific edge cases. Its collision items address the same kind of substring confusion that caused defects during development (Table IV). The benchmark is small, uses one profile, and was written by the system’s authors. It is not a broad Web corpus or a representative sample of real forms. Results on it therefore show internal consistency, not generalization to independently collected forms.",
+    "B. Systems Compared",
+    "B1: Exact label matcher. A dictionary of 10 normalized literal question labels (e.g., “full name,” “email,” “date of birth”) mapped to profile fields. Any other wording returns null.",
+    "B2: Heuristic token matcher. An ordered list of substring rules. The first rule maps any question whose normalized text contains “name” to the user’s full name; later rules handle keywords such as “college,” “company,” and “project.”",
+    "B3: Simulated generative baseline. A deterministic script, not an LLM. On questions that should be refused or left empty it emits fabricated values, including fake credentials such as a password and a card number; on answerable questions it uses B2’s rules. It illustrates the failure modes of unconstrained generation and does not measure any real model.",
+    "A: FormPilot reference. An offline, deterministic implementation of FormPilot’s decision logic: regular-expression refusal of sensitive fields, rule-based resolution of questions to profile keys, the confidence cap of 70, and null for missing and collision items. It was written by the authors during development, and its rules explicitly cover the benchmark’s missing-information, sensitive, and collision items. Its result is therefore a consistency check on the intended decision rules, not an independent baseline.",
+    "B: FormPilot live. The production system prompt and the LLM call described in Section IV-E, followed by the confidence and source rule of Section IV-F.",
+    "None of these is an independent external baseline. In particular, the same LLM was not run without FormPilot’s provenance, confidence, and refusal components. The evaluation therefore cannot separate the contribution of those components from that of the model itself.",
+    "C. Live Run Configuration",
+    "The live evaluation used a Node.js harness (runLiveLLMEvaluation.cjs) rather than the deployed /api/ai/generate route. The harness reproduces the production system prompt, JSON extraction, and source and confidence rule, and it calls the OpenRouter API directly; authentication, rate limiting, and correction retrieval were therefore not exercised. It sent the benchmark questions, the evaluation profile, and the system prompt to NVIDIA Nemotron 3.5 Lightning, a mixture-of-experts model with 30B total and 3B active parameters [21], through the OpenRouter chat-completions endpoint [22], using the model identifier nvidia/nemotron-3.5-lightning:free. The sampling temperature was 0.1, the token limit was 4096, and reasoning tokens were disabled (reasoning.max_tokens = 0). Correction history was empty. The 40 questions were sent in 8 batches of 5, with a delay of about 2 seconds between batches, because the free-tier endpoint queued larger requests. The model’s output was parsed with the JSON extraction step, and the source and confidence rule of Section IV-F was applied. One run was recorded; its trace is timestamped 30 September 2026.",
+    "D. Scoring",
+    "Each question receives exactly one outcome. For an answerable question, a non-null answer equal to the expected answer is a true positive (TP), a null answer is a false negative (FN), and a non-null answer with the wrong value is a false positive (FP). For a question that requires abstention, a null answer is a true negative (TN) and any non-null answer is an FP. Both kinds of FP are false fills: values that would be written to the form if the user did not catch them.",
+    "Answers are compared with the expected answer by case-insensitive exact match after trimming whitespace. This applies to free-text items (two items, compared with the profile text), choice options, dates in YYYY-MM-DD form, linear-scale values, and each flattened grid row.",
+    "The metrics are defined as follows. Accuracy is (TP + TN)/40. Precision is TP/(TP + FP) and recall is TP/(TP + FN). F1 for the answerable class is the harmonic mean of precision and recall. Macro-F1 is the mean of this F1 and the F1 of the abstention class, computed from the same four counts (precision TN/(TN + FN), recall TN/(TN + FP); an undefined ratio is taken as 0). The false-fill rate is FP/40, the abstention rate is (TN + FN)/40, and sensitive refusal is the number of the 6 sensitive questions answered with null.",
+    "Under this scheme, a wrong value on an answerable question lowers precision but not recall. Counting such fills also as FN would lower B2 and B3 recall to 22/25 (88%). The macro-F1 convention above counts the three wrong-value fills of B2 and B3 in the denominator of abstention-class recall (TN + FP), although they occur on answerable questions. Using only the 15 abstention items as that denominator gives 82.31% for B2; the values for the other systems do not change.",
+    "E. Statistical Analysis",
+    "For proportions we report exact (Clopper–Pearson) 95% confidence intervals. Systems are compared on the same 40 questions with an exact two-sided McNemar test on the questions where their correctness differs.",
+    "F. Engineering Tests",
+    "Seven automated regression tests cover five defects fixed during development (Table IV), the confidence policy (cap of 70 for generated answers, 0 for missing), and grid flattening. The developers also documented 20 manual test scenarios that exercise end-to-end interaction with the supported Google Forms input types. These tests check implementation behavior on specific cases. They are not an exhaustive verification across Google Forms and are not part of the empirical evaluation.",
+    "Table IV. Defects Corrected During Development (each covered by a regression test)",
+    "",
+    "VI. Results",
+    "All results in this section come from the controlled 40-question development benchmark, with one run per system.",
+    "A. Comparison of Systems",
+    "Table V gives the metrics and Table VI the outcome counts. FormPilot achieved 100% accuracy on the controlled 40-question development benchmark in the recorded live evaluation. It made no false fills and refused all 6 sensitive fields. The deterministic reference implementation produced the same result, and the per-question traces show that the two FormPilot pipelines made the same decision on every question.",
+    "Table V. Metrics on the Controlled 40-Question Development Benchmark (one run per system)",
+    "Macro-F1 follows the convention in Section V-D. For B1 and B2, the 6/6 refusals arise because their matching rules return null on these questions, not from a dedicated sensitive-field check. [NEEDS VERIFICATION: confirm that neither baseline contains sensitive-field logic.]",
+    "Table VI. Outcome Counts",
+    "",
+    "B. Baseline Errors",
+    "B1 recognizes only its 10 literal labels. It answered 5 of the 25 answerable questions and returned null for the other 20, which gives 100% precision but 20% recall.",
+    "B2’s errors all come from substring collisions. Because its first rule maps any question containing “name” to the user’s full name, three answerable questions received the full name instead of the requested entity: “College / Institution Name” (gf_08), “Current or Most Recent Company Name” (gf_13), and “Name of your flagship technical project” (gf_23). Under the scoring rule in Section V-D these are wrong-value fills, so B2 has 22 TP rather than 25. B2 also filled five abstention items: “Emergency Contact Name” (gf_27), “Father’s/Guardian’s Occupation” (gf_28), and all three collision items (gf_37–gf_39). That gives 8 FP in total.",
+    "B3 inherits B2’s three wrong-value fills on answerable questions and fills all 15 abstention items, including fabricated values for all 6 sensitive fields, for 18 FP.",
+    "Both FormPilot pipelines returned null for the three collision items and for the six missing-information items.",
+    "C. Live Run Behavior",
+    "All 40 answers in the live run were parsed by the JSON extraction step. In the trace, every answerable question carried a provenance path, and answers flagged as generated were capped at 70. All 15 abstention items returned null with confidence 0. [NEEDS VERIFICATION: number of live answers labeled generated and capped at 70.]",
+    "Per-question and per-batch latency were not retained in a form suitable for reliable reporting, so latency is omitted from the quantitative results.",
+    "D. Uncertainty",
+    "With 40 questions, 40/40 correct is consistent with a true accuracy as low as 91.2% (95% Clopper–Pearson interval 91.2–100%). For the 25 answerable, 15 abstention, and 6 sensitive questions, the corresponding intervals are 86.3–100%, 78.2–100%, and 54.1–100%. Six sensitive items are therefore weak evidence about sensitive-field handling in general.",
+    "FormPilot and B2 disagreed in correctness on 8 questions, and FormPilot was correct on all 8 (exact McNemar test, p = 0.0078). Against B1, FormPilot was correct on all 20 discordant questions (p < 0.001). These tests concern the development benchmark and a single live run only.",
+    "VII. Discussion",
+    "A. What the Benchmark Shows",
+    "The benchmark confirms three failure modes that FormPilot was designed to avoid. Literal matching misses paraphrased questions. Substring matching attaches a generic term such as “name” to the wrong field. Unconstrained answering fills questions that should stay empty, including sensitive ones. On these 40 questions, with this profile and in this run, the LLM pipeline avoided all three. Since the benchmark was curated during development, this shows that the pipeline handles the cases its authors anticipated. It does not show how often such errors occur on unseen forms.",
+    "B. Engineering Interpretation",
+    "The following points describe design intent and remain hypotheses; none was tested in isolation. A provenance path should let a reviewer check a proposed value against its source rather than judge it in the abstract. The confidence cap separates copied values from generated ones in the panel’s color coding: a generated answer can be at most yellow (70), never green (80 or above). Schema isolation removes stored credentials as a possible source of leaked values, because none are stored, although it cannot stop a model from fabricating a value. The review gate and the absence of submission logic keep a human between every proposed value and its effect. Measuring how much each mechanism contributes would require the ablations and user study listed in Section VIII.",
+    "C. Answers to the Research Questions",
+    "RQ1. The eight supported control types and grid questions are represented as FormQuestion objects, with grid rows flattened into separate questions, and they share one mapping pipeline. Extraction is covered by regression and manual tests. As far as the evidence shows, it is not exercised by the benchmark, whose items are supplied as structured records (Section V-A).",
+    "RQ2. On the development benchmark, the live LLM pipeline achieved 100% accuracy, against 80.0% for heuristic matching (p = 0.0078) and 50.0% for exact matching. Because no plain-LLM baseline was run, this difference cannot be attributed to FormPilot’s additional components rather than to the LLM.",
+    "RQ3. In the live trace, answerable questions carried provenance paths and generated answers were capped at 70, as the policy specifies. The server does not verify the paths themselves (Section IV-F), and the effect of this information on reviewers was not measured.",
+    "RQ4. Both FormPilot pipelines returned null on all 15 abstention items: 6 missing, 6 sensitive, and 3 collision. B2 filled 5 of them and B3 filled all 15. In the live run, the 6 sensitive refusals came from schema isolation and the prompt alone, since no deterministic filter was applied. The small number of items in each category limits this evidence (Section VI-D).",
+    "VIII. Limitations and Threats to Validity",
+    "Controlled development benchmark. The 40 questions, the single test profile, and the expected answers were all produced by the authors during development. The collision items target the same kind of defect that was fixed during development (Table IV).",
+    "No held-out evaluation. No independently collected set of unseen forms or questions has been evaluated, so generalization is not established.",
+    "One recorded live run. The live result comes from a single run at temperature 0.1 on a free-tier endpoint.",
+    "No repeated-run variance. Run-to-run variation has not been measured.",
+    "No independent plain-LLM baseline. The reference implementation is internal and B3 is scripted. The same model without FormPilot’s components was not evaluated, and no component was ablated.",
+    "No human user study. Time-to-fill, usability, trust, and correction rates have not been measured.",
+    "No prompt-injection evaluation. Question titles and options are written by the form’s author and enter the prompt, so a malicious form could attempt indirect prompt injection [19]. The benchmark contains no injected instructions. Its three collision items test lexical confusion only and do not show robustness to adversarial input.",
+    "One model configuration. Only one model, through one gateway with one parameter setting, was evaluated.",
+    "Full profile sent to a third party. Every generation request serializes the complete user profile, together with up to 15 recent corrections, and sends it to OpenRouter and the model provider. The profile is not reduced to the fields needed for the current questions; no field-level minimization is performed. OpenRouter states that each provider it routes to has its own data-handling policies for logging and retention [23]. For the evaluated nvidia/nemotron-3.5-lightning:free endpoint, OpenRouter reports NVIDIA’s notice that use is logged for security purposes and to improve NVIDIA products and services, and that users should not upload confidential information or personal data through the free endpoint [21]. Because every generation request carries the complete user profile, this provider-side data-use policy is a material privacy consideration for any deployment.",
+    "Google Forms only. Extraction depends on role attributes in Google Forms markup, which is not a documented interface and may change. Other form systems, multi-page forms, and embedded forms were not evaluated.",
+    "The confidence cap is an engineering choice. The value 70 has no documented justification, no alternative value was tested, and the policy is not a statistical calibration.",
+    "Limited adversarial testing. The three collision items are the only adversarial cases in the benchmark.",
+    "Shallow provenance check. The server does not verify that sourceDetail exists in the profile or that the answer matches the stored value (Section IV-F).",
+    "No deterministic sensitive-field filter in production. The regular-expression filter exists only in the reference implementation (Section IV-G). In production and in the live harness, sensitive fields are handled by schema isolation and general prompt instructions, which do not name the sensitive categories, so no rule blocks a value that the model fabricates.",
+    "Harness rather than deployed route. The live run used a script that reproduces the production logic instead of calling the deployed route, so any drift between the two would not be detected.",
+    "Future Work",
+    "The missing experiments, in order of priority, are:",
+    "an independently collected held-out benchmark with several profiles and annotators outside the development team;",
+    "three to five repeated live runs with variance reported;",
+    "a plain-LLM baseline using the same model;",
+    "ablations of the provenance check, the confidence cap, and the refusal filter;",
+    "paraphrased sensitive-field questions and a dedicated prompt-injection test set;",
+    "evaluation of several models;",
+    "median and 95th-percentile latency per question;",
+    "a human study of time-to-fill, usability, and trust.",
+    "On the engineering side, the next steps are field-level selection of profile data before each request, verification of sourceDetail paths and values on the server, evaluation on FormFactory [13] and FormGym [14], and automated browser tests that cover multi-page forms.",
+    "IX. Conclusion",
+    "FormPilot assists Google Forms users by mapping questions to a structured profile through LLM-based in-context semantic mapping. Each answer carries a provenance path and a rule-based confidence value. Missing and sensitive fields are left empty, and the user reviews every value before it is written. The system contains no submission logic. On a controlled 40-question development benchmark, one recorded live run achieved 100% accuracy with no false fills and all six sensitive fields refused, while lexical baselines reached 50.0% and 80.0%. These results show that the implemented rules behave as intended on the cases the authors constructed. Claims about accuracy, safety, or usefulness on real-world forms require a held-out benchmark, repeated runs, a plain-LLM baseline with ablations, a prompt-injection evaluation, and a user study.",
+    "Acknowledgment",
+    "The authors thank Malla Reddy University for providing the academic environment and resources that supported this work.",
+    "Funding",
+    "This research received no external funding.",
+    "Data and Code Availability",
+    "The project repository is publicly available at https://github.com/SAITEJA0217/formpilot. It contains the 40-question benchmark corpus, the evaluation profile used by the benchmark runners, the deterministic benchmark runner, the live evaluation script, the raw reference and live-run traces, the automated regression suite, and the system prompt definition. The live result also depends on a free-tier model endpoint whose availability and behavior may change, so exact reproduction of the live run is not guaranteed.",
+    "Conflict of Interest",
+    "The authors declare no conflict of interest.",
+    "Appendix A. Production System Prompt",
+    "You are FormPilot AI.",
+    " ",
+    "You receive:",
+    "1. User Profile",
+    "2. Form Questions",
+    "3. (Optional) User's Preferred Phrasing Examples from past corrections",
+    " ",
+    "Rules:",
+    "* Use profile information whenever available.",
+    "* Generate professional answers when needed, mirroring any provided phrasing examples.",
+    "* Never invent personal information.",
+    "* If information is unavailable return null.",
+    "* Generate confidence scores (0-100).",
+    "* For 'date' questions, format answer strictly as YYYY-MM-DD.",
+    "* For 'time' questions, format answer strictly as HH:MM (24-hour).",
+    "* For 'linear_scale' or 'radio' or 'checkbox' questions, return the exact option string.",
+    "* Return structured JSON only.",
+    "* IMPORTANT: Provide 'sourceDetail' which is the EXACT path in the JSON profile you used (e.g., 'education[0].degree' or 'basicProfile.fullName').",
+    "* IMPORTANT: Set 'isGenerated' to true if you had to write/infer the answer rather than copying it directly from the profile.",
+    " ",
+    "Response Format strictly:",
+    "{",
+    "  \"answers\": [",
+    "    {",
+    "      \"question\": \"Full Name\",",
+    "      \"answer\": \"John Doe\",",
+    "      \"confidence\": 100,",
+    "      \"sourceDetail\": \"basicProfile.fullName\",",
+    "      \"isGenerated\": false",
+    "    }",
+    "  ]",
+    "}",
+    "The user message that follows the system prompt contains the recent corrections (when present), then “USER PROFILE:” with the profile JSON, then “FORM QUESTIONS:” with the FormQuestion array, and finally an instruction to return only valid JSON of the form {\"answers\": [...]}.",
+    "References",
+    "[1]\tWHATWG, “HTML Living Standard, §4.10.19.7: Autofill.” [Online]. Available: https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#autofill (accessed Oct. 6, 2026).",
+    "[2]\tJ. Bose, “Field label prediction for autofill in web browsers,” arXiv:1912.08809, 2019.",
+    "[3]\tZ. Ji et al., “Survey of hallucination in natural language generation,” ACM Comput. Surv., vol. 55, no. 12, Art. no. 248, 2023, doi: 10.1145/3571730.",
+    "[4]\tX. Lin, P. Ilia, and J. Polakis, “Fill in the blanks: Empirical analysis of the privacy threats of browser form autofill,” in Proc. ACM SIGSAC Conf. Computer and Communications Security (CCS), 2020, doi: 10.1145/3372297.3417271.",
+    "[5]\tG. A. Toda, E. Cortez, A. S. da Silva, and E. de Moura, “A probabilistic approach for automatically filling form-based web interfaces,” Proc. VLDB Endowment, vol. 4, no. 3, pp. 151–160, 2010, doi: 10.14778/1929861.1929862.",
+    "[6]\tM. Winckler, V. Gaits, D.-B. Vo, S. Firmenich, and G. Rossi, “An approach and tool support for assisting users to fill-in web forms with personal information,” in Proc. 29th ACM Int. Conf. Design of Communication (SIGDOC), 2011, pp. 195–202, doi: 10.1145/2038476.2038515.",
+    "[7]\tG. Z. Kantorski, V. P. Moreira, and C. A. Heuser, “Automatic filling of hidden web forms: A survey,” SIGMOD Rec., vol. 44, no. 1, pp. 24–35, 2015, doi: 10.1145/2783888.2783898.",
+    "[8]\tH. Belgacem, X. Li, D. Bianculli, and L. C. Briand, “A machine learning approach for automated filling of categorical fields in data entry forms,” ACM Trans. Softw. Eng. Methodol., vol. 32, no. 2, Art. no. 47, 2023, doi: 10.1145/3533021.",
+    "[9]\tI. Gur et al., “Understanding HTML with large language models,” in Findings Assoc. Comput. Linguistics: EMNLP 2023, 2023, pp. 2803–2821, doi: 10.18653/v1/2023.findings-emnlp.185.",
+    "[10]\tR. Dong, Z. Huang, I. I. Lam, Y. Chen, and X. Wang, “WebRobot: Web robotic process automation using interactive programming-by-demonstration,” in Proc. 43rd ACM SIGPLAN Int. Conf. Programming Language Design and Implementation (PLDI), 2022, pp. 152–167, doi: 10.1145/3519939.3523711.",
+    "[11]\tX. Deng et al., “Mind2Web: Towards a generalist agent for the web,” in Advances in Neural Information Processing Systems, vol. 36 (Datasets and Benchmarks Track), 2023, doi: 10.52202/075280-1220.",
+    "[12]\tS. Zhou et al., “WebArena: A realistic web environment for building autonomous agents,” in Proc. Int. Conf. Learning Representations (ICLR), 2024.",
+    "[13]\tB. Li et al., “FormFactory: An interactive benchmarking suite for multimodal form-filling agents,” arXiv:2506.01520, 2025.",
+    "[14]\tM. Toles, I. Song, R. Singh, and Z. Yu, “FormGym: Doing paperwork with agents,” in Proc. 19th Conf. European Chapter Assoc. Comput. Linguistics (EACL), vol. 1, 2026, pp. 3771–3785, doi: 10.18653/v1/2026.eacl-long.175.",
+    "[15]\tE. Horvitz, “Principles of mixed-initiative user interfaces,” in Proc. SIGCHI Conf. Human Factors in Computing Systems (CHI), 1999, pp. 159–166, doi: 10.1145/302979.303030.",
+    "[16]\tS. Amershi et al., “Guidelines for human-AI interaction,” in Proc. CHI Conf. Human Factors in Computing Systems, 2019, pp. 1–13, doi: 10.1145/3290605.3300233.",
+    "[17]\tH. Rashkin et al., “Measuring attribution in natural language generation models,” Computational Linguistics, vol. 49, no. 4, pp. 777–840, 2023, doi: 10.1162/coli_a_00486.",
+    "[18]\tM. Xiong et al., “Can LLMs express their uncertainty? An empirical evaluation of confidence elicitation in LLMs,” in Proc. Int. Conf. Learning Representations (ICLR), 2024. arXiv:2306.01463.",
+    "[19]\tK. Greshake, S. Abdelnabi, S. Mishra, C. Endres, T. Holz, and M. Fritz, “Not what you’ve signed up for: Compromising real-world LLM-integrated applications with indirect prompt injection,” arXiv:2302.12173, 2023.",
+    "[20]\tGoogle, “Extensions / Manifest V3,” Chrome for Developers. [Online]. Available: https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3 (accessed Oct. 6, 2026).",
+    "[21]\tOpenRouter, “What is Nemotron 3.5 Lightning? Specs, context, and API,” OpenRouter blog. [Online]. Available: https://openrouter.ai/blog/insights/nemotron-3-5-lightning/ (accessed Oct. 7, 2026).",
+    "[22]\tOpenRouter, “NVIDIA: Nemotron 3.5 Lightning.” [Online]. Available: https://openrouter.ai/nvidia/nemotron-3.5-lightning (accessed Oct. 6, 2026).",
+    "[23]\tOpenRouter, “Provider logging: Provider data retention policies,” OpenRouter documentation. [Online]. Available: https://openrouter.ai/docs/guides/privacy/provider-logging (accessed Oct. 7, 2026)."
+  ],
+  "tables": [
+    [
+      [
+        "Component",
+        "Technology (version)"
+      ],
+      [
+        "Browser extension",
+        "Chromium Manifest V3; extension version 1.0.0; React ^19.2.7; TypeScript ~6.0.2; Vite ^8.1.0; CRXJS Vite plugin ^2.7.0"
+      ],
+      [
+        "Web application and API",
+        "Next.js 16.2.9 (App Router); React 19.2.4; TypeScript ^5"
+      ],
+      [
+        "Authentication",
+        "Firebase Authentication (client SDK ^12.15.0); Firebase Admin SDK ^13.10.0"
+      ],
+      [
+        "LLM access",
+        "OpenRouter chat-completions API; model nvidia/nemotron-3.5-lightning:free"
+      ]
+    ],
+    [
+      [
+        "Google Forms control",
+        "Detection rule (summary)",
+        "FormQuestion type"
+      ],
+      [
+        "Short answer",
+        "Text-like input, excluding hidden and other typed inputs",
+        "short_answer"
+      ],
+      [
+        "Paragraph",
+        "textarea",
+        "paragraph"
+      ],
+      [
+        "Date",
+        "input[type=\"date\"]",
+        "date"
+      ],
+      [
+        "Time",
+        "input[type=\"time\"]",
+        "time"
+      ],
+      [
+        "Multiple choice",
+        "div[role=\"radiogroup\"]",
+        "radio"
+      ],
+      [
+        "Linear scale",
+        "Radio group whose layout includes a presentation element",
+        "linear_scale"
+      ],
+      [
+        "Checkboxes",
+        "div[role=\"checkbox\"]",
+        "checkbox"
+      ],
+      [
+        "Dropdown",
+        "div[role=\"listbox\"]; options from div[role=\"option\"]",
+        "dropdown"
+      ],
+      [
+        "Grid (radio or checkbox)",
+        "div[role=\"grid\"]; one question per row",
+        "radio or checkbox"
+      ],
+      [
+        "Other (e.g., file upload)",
+        "No rule matches",
+        "unsupported (discarded)"
+      ]
+    ],
+    [
+      [
+        "Category",
+        "Questions",
+        "Expected outcome"
+      ],
+      [
+        "Personal identity",
+        "4",
+        "Answer"
+      ],
+      [
+        "Contact information",
+        "3",
+        "Answer"
+      ],
+      [
+        "Education",
+        "5",
+        "Answer"
+      ],
+      [
+        "Experience",
+        "3",
+        "Answer"
+      ],
+      [
+        "Social links",
+        "3",
+        "Answer"
+      ],
+      [
+        "Technical skills",
+        "2",
+        "Answer"
+      ],
+      [
+        "Grid (flattened rows)",
+        "2",
+        "Answer"
+      ],
+      [
+        "Projects",
+        "2",
+        "Answer"
+      ],
+      [
+        "Linear-scale agreement",
+        "1",
+        "Answer"
+      ],
+      [
+        "Missing information",
+        "6",
+        "Abstain (null)"
+      ],
+      [
+        "Sensitive fields",
+        "6",
+        "Refuse (null)"
+      ],
+      [
+        "Substring collision",
+        "3",
+        "Abstain (null)"
+      ],
+      [
+        "Total",
+        "40",
+        "25 answer, 15 abstain"
+      ]
+    ],
+    [
+      [
+        "Defect",
+        "Cause",
+        "Correction"
+      ],
+      [
+        "Question collision",
+        "Substring matching could confuse “Name” with “Father’s Name”",
+        "Exact question match before substring fallback"
+      ],
+      [
+        "Option collision",
+        "“Agree” could match “Strongly Agree”",
+        "Exact match first; substring fallback only for options of at least 3 characters"
+      ],
+      [
+        "Date shift",
+        "Date parsing could introduce a time-zone offset",
+        "YYYY-MM-DD strings passed through unchanged"
+      ],
+      [
+        "Hidden inputs",
+        "Generic selectors could capture hidden page tokens",
+        "Hidden inputs excluded"
+      ],
+      [
+        "Stale review state",
+        "Re-analysis did not refresh the Review Panel",
+        "Panel state synchronized with new answers"
+      ]
+    ],
+    [
+      [
+        "System",
+        "Accuracy (%)",
+        "Precision (%)",
+        "Recall (%)",
+        "F1, answerable class (%)",
+        "Macro-F1 (%)",
+        "Sensitive refused"
+      ],
+      [
+        "B1: Exact label",
+        "50.00",
+        "100.00",
+        "20.00",
+        "33.33",
+        "46.67",
+        "6/6"
+      ],
+      [
+        "B2: Heuristic token",
+        "80.00",
+        "73.33",
+        "100.00",
+        "84.62",
+        "78.02",
+        "6/6"
+      ],
+      [
+        "B3: Simulated generative",
+        "55.00",
+        "55.00",
+        "100.00",
+        "70.97",
+        "35.48",
+        "0/6"
+      ],
+      [
+        "A: FormPilot reference",
+        "100.00",
+        "100.00",
+        "100.00",
+        "100.00",
+        "100.00",
+        "6/6"
+      ],
+      [
+        "B: FormPilot live (Nemotron)",
+        "100.00",
+        "100.00",
+        "100.00",
+        "100.00",
+        "100.00",
+        "6/6"
+      ]
+    ],
+    [
+      [
+        "System",
+        "TP",
+        "TN",
+        "FP: wrong value on answerable",
+        "FP: fill on abstention item",
+        "FN",
+        "False-fill rate (%)",
+        "Abstention rate (%)"
+      ],
+      [
+        "B1: Exact label",
+        "5",
+        "15",
+        "0",
+        "0",
+        "20",
+        "0.00",
+        "87.50"
+      ],
+      [
+        "B2: Heuristic token",
+        "22",
+        "10",
+        "3",
+        "5",
+        "0",
+        "20.00",
+        "25.00"
+      ],
+      [
+        "B3: Simulated generative",
+        "22",
+        "0",
+        "3",
+        "15",
+        "0",
+        "45.00",
+        "0.00"
+      ],
+      [
+        "A: FormPilot reference",
+        "25",
+        "15",
+        "0",
+        "0",
+        "0",
+        "0.00",
+        "37.50"
+      ],
+      [
+        "B: FormPilot live (Nemotron)",
+        "25",
+        "15",
+        "0",
+        "0",
+        "0",
+        "0.00",
+        "37.50"
+      ]
+    ]
+  ]
+}

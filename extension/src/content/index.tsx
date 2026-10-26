@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import type { FormQuestion, QuestionType, AIAnswer } from '../../../shared/types';
 import ReviewPanel from './ReviewPanel';
 import '../style.css';
+
 function extractGoogleFormQuestions(): FormQuestion[] {
   const questions: FormQuestion[] = [];
 
@@ -15,7 +16,9 @@ function extractGoogleFormQuestions(): FormQuestion[] {
     if (!titleElement) return;
 
     const fullText = titleElement.textContent || '';
-    const required = fullText.includes('*');
+    const ariaRequired = block.querySelector('[aria-required="true"]') !== null;
+    const requiredClass = block.querySelector('.freebirdFormviewerViewItemsItemRequiredAsterisk') !== null;
+    const required = fullText.includes('*') || ariaRequired || requiredClass;
     const questionText = fullText.replace(/\*/g, '').trim();
     if (!questionText) return;
 
@@ -73,7 +76,6 @@ function extractGoogleFormQuestions(): FormQuestion[] {
       });
     } else if (block.querySelector('div[role="listbox"]')) {
       type = 'dropdown';
-      // Dropdown options are often hidden until clicked, but we can try to extract aria-labels or values if present
       const listOptions = block.querySelectorAll('div[role="option"]');
       listOptions.forEach(o => {
         const val = o.getAttribute('data-value') || o.textContent;
@@ -102,18 +104,138 @@ function extractGoogleFormQuestions(): FormQuestion[] {
   return questions;
 }
 
-// Communication with popup or background
+// ─── Content-Script Message Handler with Input Validation ─────────────────────
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
-  if (request.action === 'EXTRACT_QUESTIONS') {
-    const questions = extractGoogleFormQuestions();
-    sendResponse({ questions });
-  } else if (request.action === 'SHOW_REVIEW_PANEL') {
-    injectReviewPanel(request.answers);
+  if (!request || typeof request !== 'object' || typeof request.action !== 'string') {
+    sendResponse({ error: 'Malformed message request' });
+    return false;
   }
-  return true; // Keep channel open
+
+  if (request.action === 'EXTRACT_QUESTIONS') {
+    try {
+      const questions = extractGoogleFormQuestions();
+      sendResponse({ questions });
+    } catch (err: any) {
+      sendResponse({ error: err.message || 'Failed to extract form questions' });
+    }
+    return false;
+  }
+
+  if (request.action === 'SHOW_REVIEW_PANEL') {
+    if (!Array.isArray(request.answers)) {
+      sendResponse({ error: 'Invalid payload: answers must be an array' });
+      return false;
+    }
+    try {
+      injectReviewPanel(request.answers);
+      sendResponse({ success: true });
+    } catch (err: any) {
+      sendResponse({ error: err.message || 'Failed to inject review panel' });
+    }
+    return false;
+  }
+
+  sendResponse({ error: `Unsupported action: ${request.action}` });
+  return false;
 });
 
 let rootNode: ReturnType<typeof createRoot> | null = null;
+
+// ─── Asynchronous Bounded Dropdown Option Selection ───────────────────────────
+async function selectDropdownOption(
+  block: Element,
+  answerText: string,
+  maxWaitMs = 1500,
+  intervalMs = 50
+): Promise<boolean> {
+  const listbox = block.querySelector('div[role="listbox"]');
+  if (!listbox) return false;
+
+  (listbox as HTMLElement).click();
+
+  const startTime = Date.now();
+  const normAns = answerText.toLowerCase().trim();
+
+  return new Promise((resolve) => {
+    const timer = setInterval(() => {
+      // Scope option search to current block or active dropdown popup to prevent cross-question collision
+      let options = block.querySelectorAll('div[role="option"]');
+      if (options.length === 0) {
+        const activePopup = document.querySelector('.exportSelectPopup, .quantumWizMenuPaperselectPopup, div[role="listbox"][aria-expanded="true"]');
+        if (activePopup) {
+          options = activePopup.querySelectorAll('div[role="option"]');
+        } else {
+          options = document.querySelectorAll('div[role="option"]:not([aria-hidden="true"])');
+        }
+      }
+      let foundOption: HTMLElement | null = null;
+
+      // Pass 1: exact option match
+      options.forEach(opt => {
+        if (foundOption) return;
+        const val = (opt.getAttribute('data-value') || opt.textContent || '').toLowerCase().trim();
+        if (val && val !== 'choose' && val === normAns) {
+          foundOption = opt as HTMLElement;
+        }
+      });
+
+      // Pass 2: substring fallback if length >= 3
+      if (!foundOption && normAns.length >= 3) {
+        options.forEach(opt => {
+          if (foundOption) return;
+          const val = (opt.getAttribute('data-value') || opt.textContent || '').toLowerCase().trim();
+          if (val && val !== 'choose' && val.length >= 3 && (normAns.includes(val) || val.includes(normAns))) {
+            foundOption = opt as HTMLElement;
+          }
+        });
+      }
+
+      if (foundOption) {
+        clearInterval(timer);
+        (foundOption as HTMLElement).click();
+        resolve(true);
+        return;
+      }
+
+      if (Date.now() - startTime >= maxWaitMs) {
+        clearInterval(timer);
+        console.warn(`[FormPilot Content] Timed out waiting for dropdown option for: "${answerText}"`);
+        // Close dropdown
+        (listbox as HTMLElement).click();
+        resolve(false);
+      }
+    }, intervalMs);
+  });
+}
+
+function parseSafeDate(rawDateStr: string): string | null {
+  const trimmed = rawDateStr.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
+  }
+  const match = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (match) {
+    const p1 = parseInt(match[1], 10);
+    const p2 = parseInt(match[2], 10);
+    const year = match[3];
+    if (p1 > 12 && p2 <= 12) {
+      return `${year}-${p2.toString().padStart(2, '0')}-${p1.toString().padStart(2, '0')}`;
+    } else if (p2 > 12 && p1 <= 12) {
+      return `${year}-${p1.toString().padStart(2, '0')}-${p2.toString().padStart(2, '0')}`;
+    } else if (p1 <= 12 && p2 <= 12) {
+      // Default to DD/MM/YYYY for ambiguous numbers
+      return `${year}-${p2.toString().padStart(2, '0')}-${p1.toString().padStart(2, '0')}`;
+    }
+  }
+  const d = new Date(trimmed);
+  if (!isNaN(d.getTime())) {
+    const y = d.getFullYear();
+    const m = (d.getMonth() + 1).toString().padStart(2, '0');
+    const day = d.getDate().toString().padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  return null;
+}
 
 function injectReviewPanel(answers: AIAnswer[]) {
   let container = document.getElementById('formpilot-review-root');
@@ -145,14 +267,15 @@ function injectReviewPanel(answers: AIAnswer[]) {
     element.dispatchEvent(new Event('blur', { bubbles: true }));
   }
 
-  const handleFill = (finalAnswers: AIAnswer[]) => {
+  const handleFill = async (finalAnswers: AIAnswer[]) => {
     const questionBlocks = document.querySelectorAll('div[role="listitem"]');
     let filledCount = 0;
     let totalCount = 0;
+    let skippedCount = 0;
 
-    questionBlocks.forEach((block) => {
+    for (const block of Array.from(questionBlocks)) {
       const titleElement = block.querySelector('div[role="heading"]');
-      if (!titleElement) return;
+      if (!titleElement) continue;
       const questionText = (titleElement.textContent || '').replace(/\*/g, '').trim();
       const normQ = questionText.toLowerCase().trim();
 
@@ -168,8 +291,7 @@ function injectReviewPanel(answers: AIAnswer[]) {
             const rowQuestionText = `${questionText}: ${rowHeader.textContent.trim()}`;
             const normRowQ = rowQuestionText.toLowerCase().trim();
             
-            // Exact match on row question
-            let answerObj = finalAnswers.find(a =>
+            const answerObj = finalAnswers.find(a =>
               a.question === rowQuestionText ||
               a.question.toLowerCase().trim() === normRowQ
             );
@@ -177,10 +299,9 @@ function injectReviewPanel(answers: AIAnswer[]) {
             if (answerObj && answerObj.answer) {
               const targetAns = answerObj.answer.toLowerCase().trim();
               const options = row.querySelectorAll('div[role="radio"], div[role="checkbox"]');
-              let rowFilled = false;
+              let matchedOption: HTMLElement | null = null;
 
               // Pass 1: exact match
-              let matchedOption: HTMLElement | null = null;
               options.forEach(opt => {
                 const val = (opt.getAttribute('data-value') || opt.getAttribute('aria-label') || opt.textContent || '').toLowerCase().trim();
                 if (val && val === targetAns) {
@@ -203,62 +324,75 @@ function injectReviewPanel(answers: AIAnswer[]) {
                 if (!isChecked) {
                   (matchedOption as HTMLElement).click();
                 }
-                rowFilled = true;
+                filledCount++;
+              } else {
+                skippedCount++;
               }
-              if (rowFilled) filledCount++;
+            } else {
+              skippedCount++;
             }
           }
         });
-        return;
+        continue;
       }
 
-      // Non-grid question matching using exact match priority
+      // Non-grid question matching using tiered collision-free matcher
       totalCount++;
       
       // Step 1: Exact string match
       let answerObj = finalAnswers.find(a => a.question.toLowerCase().trim() === normQ);
       
-      // Step 2: Safe substring fallback only if exact match not found and length >= 4
-      if (!answerObj && normQ.length >= 4) {
-        answerObj = finalAnswers.find(a => {
-          const aNorm = a.question.toLowerCase().trim();
-          return aNorm.length >= 4 && (aNorm.includes(normQ) || normQ.includes(aNorm));
-        });
+      // Step 2: Normalized alphanumeric match
+      if (!answerObj) {
+        const normalizeStr = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
+        const normQClean = normalizeStr(questionText);
+        answerObj = finalAnswers.find(a => normalizeStr(a.question) === normQClean);
       }
 
-      if (!answerObj || !answerObj.answer) return;
+      // Step 3: Unambiguous Token Similarity (Rejects subset collisions)
+      if (!answerObj) {
+        const extractTokens = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, ' ').split(/\s+/).filter(w => w.length > 2);
+        const qTokens = new Set(extractTokens(questionText));
+        
+        if (qTokens.size > 0) {
+          const candidates = finalAnswers.filter(a => {
+            const aTokens = extractTokens(a.question);
+            if (aTokens.length === 0) return false;
+            const intersection = aTokens.filter(t => qTokens.has(t)).length;
+            const union = new Set([...aTokens, ...qTokens]).size;
+            const jaccard = intersection / union;
+            return jaccard >= 0.8;
+          });
+
+          // Safe: Only accept if there is exactly ONE unambiguous match
+          if (candidates.length === 1) {
+            answerObj = candidates[0];
+          }
+        }
+      }
+
+      if (!answerObj || !answerObj.answer) {
+        skippedCount++;
+        continue;
+      }
       const answerText = answerObj.answer;
 
       // 1. Date Inputs
       const dateInput = block.querySelector('input[type="date"]') as HTMLInputElement;
       if (dateInput) {
-        let formattedDate = answerText.trim();
-        if (/^\d{4}-\d{2}-\d{2}$/.test(formattedDate)) {
-          // Already in ISO format
-        } else {
-          const dMatch = formattedDate.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-          if (dMatch) {
-            let p1 = parseInt(dMatch[1], 10);
-            let p2 = parseInt(dMatch[2], 10);
-            let year = dMatch[3];
-            let day = p1 > 12 ? p1 : (p2 > 12 ? p2 : p1); // default to DD/MM/YYYY if ambiguous
-            let month = p1 > 12 ? p2 : (p2 > 12 ? p1 : p2);
-            formattedDate = `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
-          } else {
-            const parsed = new Date(formattedDate);
-            if (!isNaN(parsed.getTime())) {
-              formattedDate = parsed.toISOString().split('T')[0];
-            }
+        const formattedDate = parseSafeDate(answerText);
+        if (formattedDate) {
+          try {
+            setNativeInputValue(dateInput, formattedDate);
+            filledCount++;
+          } catch (e) {
+            console.warn("Could not set date format:", formattedDate);
+            skippedCount++;
           }
+        } else {
+          skippedCount++;
         }
-
-        try {
-          setNativeInputValue(dateInput, formattedDate);
-        } catch (e) {
-          console.warn("Could not set date format:", formattedDate);
-        }
-        filledCount++;
-        return;
+        continue;
       }
 
       // 2. Time Inputs
@@ -266,15 +400,15 @@ function injectReviewPanel(answers: AIAnswer[]) {
       if (timeInput) {
         setNativeInputValue(timeInput, answerText);
         filledCount++;
-        return;
+        continue;
       }
 
-      // 3. Text Inputs (Text, Email, Number, Tel, Url, or generic)
+      // 3. Text Inputs
       const textInput = block.querySelector('input[type="text"], input[type="email"], input[type="number"], input[type="tel"], input[type="url"], input:not([type="radio"]):not([type="checkbox"]):not([type="date"]):not([type="time"]):not([type="hidden"])') as HTMLInputElement;
       if (textInput) {
         setNativeInputValue(textInput, answerText);
         filledCount++;
-        return;
+        continue;
       }
 
       // 4. Textareas
@@ -282,83 +416,113 @@ function injectReviewPanel(answers: AIAnswer[]) {
       if (textarea) {
         setNativeInputValue(textarea, answerText);
         filledCount++;
-        return;
+        continue;
       }
 
-      // 5. Radio Buttons, Checkboxes, Linear Scale
-      const options = block.querySelectorAll('div[role="radio"], div[role="checkbox"]');
-      if (options.length > 0) {
+      // 5a. Checkboxes (Multi-Select Support)
+      const checkboxes = block.querySelectorAll('div[role="checkbox"]');
+      if (checkboxes.length > 0) {
+        const targetValues = answerText
+          .split(/[,;\n•]+/)
+          .map(s => s.toLowerCase().trim())
+          .filter(Boolean);
+
+        let anyChecked = false;
+        checkboxes.forEach(cb => {
+          const val = (cb.getAttribute('data-value') || cb.getAttribute('aria-label') || cb.textContent || '').toLowerCase().trim();
+          const matches = targetValues.some(tv => val === tv || (tv.length >= 3 && (val.includes(tv) || tv.includes(val))));
+          if (matches) {
+            const isChecked = cb.getAttribute('aria-checked') === 'true';
+            if (!isChecked) {
+              (cb as HTMLElement).click();
+            }
+            anyChecked = true;
+          }
+        });
+        if (anyChecked) {
+          filledCount++;
+        } else {
+          skippedCount++;
+        }
+        continue;
+      }
+
+      // 5b. Radio Buttons & Linear Scale (Single-Choice Select)
+      const radios = block.querySelectorAll('div[role="radio"]');
+      if (radios.length > 0) {
         const normAns = answerText.toLowerCase().trim();
-        let optionFilled = false;
+        let matchedRadio: HTMLElement | null = null;
 
         // Pass 1: exact match
-        let matchedOption: HTMLElement | null = null;
-        options.forEach(opt => {
+        radios.forEach(opt => {
           const val = (opt.getAttribute('data-value') || opt.getAttribute('aria-label') || opt.textContent || '').toLowerCase().trim();
           if (val && val === normAns) {
-            matchedOption = opt as HTMLElement;
+            matchedRadio = opt as HTMLElement;
           }
         });
 
         // Pass 2: fallback substring if length >= 3
-        if (!matchedOption && normAns.length >= 3) {
-          options.forEach(opt => {
+        if (!matchedRadio && normAns.length >= 3) {
+          radios.forEach(opt => {
             const val = (opt.getAttribute('data-value') || opt.getAttribute('aria-label') || opt.textContent || '').toLowerCase().trim();
             if (val && val.length >= 3 && (normAns.includes(val) || val.includes(normAns))) {
-              if (!matchedOption) matchedOption = opt as HTMLElement;
+              if (!matchedRadio) matchedRadio = opt as HTMLElement;
             }
           });
         }
 
-        if (matchedOption) {
-          const isChecked = (matchedOption as HTMLElement).getAttribute('aria-checked') === 'true';
+        if (matchedRadio) {
+          const isChecked = (matchedRadio as HTMLElement).getAttribute('aria-checked') === 'true';
           if (!isChecked) {
-            (matchedOption as HTMLElement).click();
+            (matchedRadio as HTMLElement).click();
           }
-          optionFilled = true;
+          filledCount++;
+        } else {
+          skippedCount++;
         }
-        if (optionFilled) filledCount++;
-        return;
+        continue;
       }
 
-      // 6. Dropdowns
+      // 6. Dropdowns with Bounded Async Wait
       const listbox = block.querySelector('div[role="listbox"]');
       if (listbox) {
-        (listbox as HTMLElement).click();
-        setTimeout(() => {
-          const listOptions = block.querySelectorAll('div[role="option"]').length > 0
-            ? block.querySelectorAll('div[role="option"]')
-            : document.querySelectorAll('div[role="option"]');
-          const normAns = answerText.toLowerCase().trim();
-          let optionMatched = false;
-          listOptions.forEach(o => {
-            if (optionMatched) return;
-            const val = (o.getAttribute('data-value') || o.textContent || '').toLowerCase().trim();
-            if (val && (val === normAns || (normAns.length >= 3 && (normAns.includes(val) || val.includes(normAns))))) {
-              (o as HTMLElement).click();
-              optionMatched = true;
-              filledCount++;
-            }
-          });
-        }, 150);
+        const selected = await selectDropdownOption(block, answerText);
+        if (selected) {
+          filledCount++;
+        } else {
+          skippedCount++;
+        }
+        continue;
       }
-    });
-    toastMessage(`Form autofilled (${filledCount} of ${totalCount} fields filled)!`);
+
+      // If we reach here, field was unsupported
+      skippedCount++;
+    }
+
+    if (skippedCount > 0) {
+      toastMessage(`Autofill complete: ${filledCount} fields filled, ${skippedCount} skipped for manual review.`);
+    } else {
+      toastMessage(`Form autofilled: all ${filledCount} fields completed!`);
+    }
   };
+
   function toastMessage(msg: string) {
     const t = document.createElement('div');
     t.innerText = msg;
     t.style.position = 'fixed';
     t.style.bottom = '20px';
     t.style.right = '20px';
-    t.style.background = '#4CAF50';
+    t.style.background = '#10B981';
     t.style.color = 'white';
     t.style.padding = '12px 24px';
     t.style.borderRadius = '8px';
+    t.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
+    t.style.fontWeight = '500';
     t.style.zIndex = '999999';
     document.body.appendChild(t);
-    setTimeout(() => t.remove(), 3000);
+    setTimeout(() => t.remove(), 4000);
   }
+
   const handleClose = () => {
     if (rootNode) {
       rootNode.unmount();
@@ -368,6 +532,7 @@ function injectReviewPanel(answers: AIAnswer[]) {
       container.remove();
     }
   };
+
   rootNode.render(
     <React.StrictMode>
       <ReviewPanel answers={answers} onFill={handleFill} onClose={handleClose} />

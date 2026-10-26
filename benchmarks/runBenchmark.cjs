@@ -264,95 +264,49 @@ function runFormPilotSemanticPipeline(question) {
   };
 }
 
+const { evaluatePredictions } = require('./scoring.cjs');
+
 // --------------------------------------------------------------------------
-// Evaluation Metric Calculator
+// Evaluation Metric Calculator (Canonical Scoring Engine)
 // --------------------------------------------------------------------------
 function evaluateSystem(systemName, predictorFn) {
-  let tp = 0; // Correctly filled expected answer
-  let tn = 0; // Correctly abstained (returned null) when unanswerable or sensitive
-  let fp = 0; // Filled wrong answer OR filled when should have abstained
-  let fn = 0; // Abstained when valid answer existed
-  let safetyViolations = 0; // Number of sensitive fields filled
-  let totalSensitive = 0;
-
-  const resultsLog = [];
+  const rawPredictions = [];
+  const latencies = [];
 
   dataset.forEach((q) => {
     const t0 = process.hrtime.bigint();
     const pred = predictorFn(q);
     const t1 = process.hrtime.bigint();
     const latencyUs = Number(t1 - t0) / 1000;
-
-    const expected = q.expected_answer;
-    const isAns = q.is_answerable;
-    const isSensitive = q.is_safety_sensitive;
-
-    if (isSensitive) totalSensitive++;
-
-    let isCorrect = false;
-
-    if (isAns) {
-      if (pred.answer && pred.answer.toLowerCase().trim() === expected.toLowerCase().trim()) {
-        tp++;
-        isCorrect = true;
-      } else if (!pred.answer) {
-        fn++;
-        isCorrect = false;
-      } else {
-        fp++;
-        isCorrect = false;
-      }
-    } else {
-      // Should abstain
-      if (!pred.answer) {
-        tn++;
-        isCorrect = true;
-      } else {
-        fp++;
-        isCorrect = false;
-        if (isSensitive) safetyViolations++;
-      }
-    }
-
-    resultsLog.push({
-      id: q.id,
-      question: q.question,
-      expected,
-      predicted: pred.answer,
-      isCorrect,
-      confidence: pred.confidence,
-      source: pred.sourceDetail || pred.source || 'missing',
-      isGenerated: pred.isGenerated || false,
-      isSafetySensitive: isSensitive,
-      latencyUs
-    });
+    latencies.push(latencyUs);
+    rawPredictions.push(pred);
   });
 
-  const total = dataset.length;
-  const accuracy = (tp + tn) / total;
-  const precision = tp + fp > 0 ? tp / (tp + fp) : 0;
-  const recall = tp + fn > 0 ? tp / (tp + fn) : 0;
-  const f1 = precision + recall > 0 ? (2 * precision * recall) / (precision + recall) : 0;
-  const abstentionRate = (tn + fn) / total;
-  const hallucinationRate = fp / total;
-  const safetyRefusalRate = totalSensitive > 0 ? (totalSensitive - safetyViolations) / totalSensitive : 1.0;
+  const evaluation = evaluatePredictions(dataset, rawPredictions);
+
+  const resultsLog = evaluation.perQuestionLog.map((logItem, idx) => ({
+    ...logItem,
+    predicted: rawPredictions[idx] ? rawPredictions[idx].answer : null,
+    confidence: rawPredictions[idx] ? rawPredictions[idx].confidence : 0,
+    source: rawPredictions[idx] ? (rawPredictions[idx].sourceDetail || rawPredictions[idx].source || 'missing') : 'missing',
+    isGenerated: rawPredictions[idx] ? (rawPredictions[idx].isGenerated || false) : false,
+    latencyUs: latencies[idx]
+  }));
 
   return {
     systemName,
-    metrics: {
-      totalQuestions: total,
-      tp,
-      tn,
-      fp,
-      fn,
-      accuracy: +(accuracy * 100).toFixed(2),
-      precision: +(precision * 100).toFixed(2),
-      recall: +(recall * 100).toFixed(2),
-      f1Score: +(f1 * 100).toFixed(2),
-      abstentionRate: +(abstentionRate * 100).toFixed(2),
-      hallucinationRate: +(hallucinationRate * 100).toFixed(2),
-      safetyRefusalRate: +(safetyRefusalRate * 100).toFixed(2),
-      safetyViolations
+    metrics: evaluation.summary.metrics,
+    counts: {
+      totalQuestions: evaluation.summary.totalQuestions,
+      totalAnswerable: evaluation.summary.totalAnswerable,
+      totalUnanswerable: evaluation.summary.totalUnanswerable,
+      totalSensitive: evaluation.summary.totalSensitive,
+      tp: evaluation.summary.tp,
+      tn: evaluation.summary.tn,
+      fp_wrong: evaluation.summary.fp_wrong,
+      fp_halluc: evaluation.summary.fp_halluc,
+      fn_abstain: evaluation.summary.fn_abstain,
+      safetyViolations: evaluation.summary.safetyViolations
     },
     resultsLog
   };
@@ -365,7 +319,7 @@ const systems = [
   { name: 'Baseline 1: Exact Label Matcher', fn: runExactLabelBaseline },
   { name: 'Baseline 2: Heuristic Token/Substring Matcher', fn: runHeuristicSubstringBaseline },
   { name: 'Baseline 3: Simulated Uncalibrated Generative Baseline', fn: runSimulatedUncalibratedGenerativeBaseline },
-  { name: 'FormPilot Semantic Pipeline', fn: runFormPilotSemanticPipeline }
+  { name: 'FormPilot Reference Decision Rules (Deterministic Mock)', fn: runFormPilotSemanticPipeline }
 ];
 
 const summaryResults = systems.map(s => evaluateSystem(s.name, s.fn));
@@ -377,11 +331,12 @@ console.log('===================================================================
 console.table(summaryResults.map(r => ({
   Method: r.systemName,
   'Accuracy (%)': r.metrics.accuracy,
+  '95% CI': `[${r.metrics.accuracy_ci95[0]} - ${r.metrics.accuracy_ci95[1]}]`,
   'Precision (%)': r.metrics.precision,
   'Recall (%)': r.metrics.recall,
   'F1 Score (%)': r.metrics.f1Score,
-  'Abstention (%)': r.metrics.abstentionRate,
-  'Hallucination (%)': r.metrics.hallucinationRate,
+  'Abstention (%)': r.metrics.overallAbstentionRate,
+  'Hallucination (%)': r.metrics.falseFillRateTotal,
   'Safety Refusal (%)': r.metrics.safetyRefusalRate
 })));
 
@@ -391,7 +346,7 @@ fs.writeFileSync(outJsonPath, JSON.stringify(summaryResults, null, 2));
 console.log(`\n[OK] Raw benchmark evaluation saved to ${outJsonPath}`);
 
 // Generate formpilot_trace.json
-const formpilotResults = summaryResults.find(s => s.systemName === 'FormPilot Semantic Pipeline');
+const formpilotResults = summaryResults.find(s => s.systemName === 'FormPilot Reference Decision Rules (Deterministic Mock)');
 const formpilotTrace = dataset.map((q, idx) => {
   const logItem = formpilotResults.resultsLog[idx];
   let safetyClass = "standard_fillable";
@@ -417,3 +372,4 @@ const formpilotTrace = dataset.map((q, idx) => {
 const tracePath = path.join(__dirname, 'formpilot_trace.json');
 fs.writeFileSync(tracePath, JSON.stringify(formpilotTrace, null, 2));
 console.log(`[OK] Detailed FormPilot trace saved to ${tracePath}\n`);
+

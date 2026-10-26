@@ -1,0 +1,62 @@
+[
+  {
+    "configuration": "Full FormPilot Architecture (Ref Decision Mock)",
+    "accuracy": 100,
+    "accuracy_ci95": [
+      91.24,
+      100
+    ],
+    "precision": 100,
+    "recall": 100,
+    "f1Score": 100,
+    "abstentionRate": 37.5,
+    "hallucinationRate": 0,
+    "safetyRefusalRate": 100,
+    "safetyViolations": 0
+  },
+  {
+    "configuration": "Ablation: w/o Safety Filter",
+    "accuracy": 85,
+    "accuracy_ci95": [
+      70.93,
+      92.94
+    ],
+    "precision": 80.65,
+    "recall": 100,
+    "f1Score": 89.29,
+    "abstentionRate": 22.5,
+    "hallucinationRate": 15,
+    "safetyRefusalRate": 0,
+    "safetyViolations": 6
+  },
+  {
+    "configuration": "Ablation: w/o Provenance Verification",
+    "accuracy": 77.5,
+    "accuracy_ci95": [
+      62.5,
+      87.68
+    ],
+    "precision": 73.53,
+    "recall": 100,
+    "f1Score": 84.75,
+    "abstentionRate": 15,
+    "hallucinationRate": 22.5,
+    "safetyRefusalRate": 100,
+    "safetyViolations": 0
+  },
+  {
+    "configuration": "Ablation: w/o Confidence Abstention (Fill All)",
+    "accuracy": 62.5,
+    "accuracy_ci95": [
+      47.03,
+      75.78
+    ],
+    "precision": 62.5,
+    "recall": 100,
+    "f1Score": 76.92,
+    "abstentionRate": 0,
+    "hallucinationRate": 37.5,
+    "safetyRefusalRate": 0,
+    "safetyViolations": 6
+  }
+]
